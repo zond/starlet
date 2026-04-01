@@ -1,0 +1,7 @@
+[package]
+name = "starlet-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+starlet-shared = { path = "../starlet-shared" }

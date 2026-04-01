@@ -1,0 +1,11 @@
+[package]
+name = "starlet-shared"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+glam = { workspace = true }
+capnp = "0.20"
+
+[build-dependencies]
+capnpc = "0.20"

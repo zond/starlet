@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/starlet-shared", "crates/starlet-client", "crates/starlet-server"]
+resolver = "2"
+
+[workspace.dependencies]
+glam = "0.29"

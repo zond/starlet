@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Starlet</title>
+    <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+    <canvas id="starlet-canvas"></canvas>
+    <input type="range" id="thrust-slider" min="0" max="100" value="0" orient="vertical">
+    <script type="module">
+        import init from './crates/starlet-client/pkg/starlet_client.js';
+        await init();
+    </script>
+</body>
+</html>
