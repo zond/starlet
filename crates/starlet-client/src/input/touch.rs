@@ -15,11 +15,14 @@ struct State {
     base_gamma: f64,
     calibrated: bool,
     speed: f32,
+    event_count: u32,
+    poll_count: u32,
+    /// Screen orientation angle: 0 = portrait, 90/-90 = landscape, 180 = upside-down
+    screen_angle: f64,
 }
 
 pub struct TouchInput {
     state: Rc<RefCell<State>>,
-    // Keep closures alive
     _closures: Vec<Box<dyn std::any::Any>>,
 }
 
@@ -34,6 +37,9 @@ impl TouchInput {
             base_gamma: 0.0,
             calibrated: false,
             speed: 0.0,
+            event_count: 0,
+            poll_count: 0,
+            screen_angle: get_screen_angle(),
         }));
 
         let window = web_sys::window().expect("window");
@@ -45,30 +51,72 @@ impl TouchInput {
             let _ = slider.class_list().add_1("visible");
         }
 
-        // Build the orientation listener (reused after permission grant)
+        // Track screen orientation changes
+        let s = state.clone();
+        let orient_closure = Closure::<dyn FnMut()>::new(move || {
+            let mut st = s.borrow_mut();
+            st.screen_angle = get_screen_angle();
+            // Recalibrate on orientation change
+            st.calibrated = false;
+            web_sys::console::log_1(
+                &format!("screen orientation changed: {}°", st.screen_angle).into(),
+            );
+        });
+        // Listen on both the modern API and the legacy event
+        if let Some(screen) = window.screen().ok() {
+            if let Ok(orientation) = js_sys::Reflect::get(&screen, &"orientation".into()) {
+                if !orientation.is_undefined() {
+                    let _ = orientation.dyn_ref::<web_sys::EventTarget>().map(|t| {
+                        t.add_event_listener_with_callback(
+                            "change",
+                            orient_closure.as_ref().unchecked_ref(),
+                        )
+                    });
+                }
+            }
+        }
+        window
+            .add_event_listener_with_callback(
+                "orientationchange",
+                orient_closure.as_ref().unchecked_ref(),
+            )
+            .ok();
+        closures.push(Box::new(orient_closure));
+
+        // Build the orientation listener
         let orientation_cb = build_orientation_callback(state.clone());
 
         // Check if requestPermission is needed (iOS 13+)
         let doe = js_sys::Reflect::get(&window, &"DeviceOrientationEvent".into()).ok();
+        let has_doe = doe.as_ref().map(|v| !v.is_undefined()).unwrap_or(false);
         let needs_permission = doe
             .as_ref()
             .and_then(|cls| js_sys::Reflect::get(cls, &"requestPermission".into()).ok())
             .map(|v| v.is_function())
             .unwrap_or(false);
 
+        web_sys::console::log_1(
+            &format!(
+                "touch init: screen_angle={}, has_DOE={}, needs_permission={}, is_secure={}",
+                get_screen_angle(),
+                has_doe,
+                needs_permission,
+                window.is_secure_context(),
+            )
+            .into(),
+        );
+
         if needs_permission {
-            // iOS: must request permission from a user gesture.
-            // Show a prompt overlay and request on tap.
+            web_sys::console::log_1(&"iOS path: showing permission prompt".into());
             let prompt = create_permission_prompt(&document);
             let prompt_clone = prompt.clone();
-            let orientation_cb_clone = orientation_cb.as_ref().unchecked_ref::<js_sys::Function>().clone();
+            let orientation_cb_clone =
+                orientation_cb.as_ref().unchecked_ref::<js_sys::Function>().clone();
             let tap_closure = Closure::<dyn FnMut()>::new(move || {
-                // Remove the prompt
                 if let Some(parent) = prompt_clone.parent_node() {
                     let _ = parent.remove_child(&prompt_clone);
                 }
 
-                // Call DeviceOrientationEvent.requestPermission()
                 let window = web_sys::window().expect("window");
                 let doe = js_sys::Reflect::get(&window, &"DeviceOrientationEvent".into())
                     .expect("DOE");
@@ -100,7 +148,7 @@ impl TouchInput {
                 .expect("add click");
             closures.push(Box::new(tap_closure));
         } else {
-            // Android / desktop: just add the listener directly
+            web_sys::console::log_1(&"non-iOS path: attaching deviceorientation directly".into());
             window
                 .add_event_listener_with_callback(
                     "deviceorientation",
@@ -136,6 +184,29 @@ impl TouchInput {
     }
 }
 
+fn get_screen_angle() -> f64 {
+    let window = web_sys::window().expect("window");
+    // Try modern API first: screen.orientation.angle
+    if let Ok(screen) = window.screen() {
+        if let Ok(orientation) = js_sys::Reflect::get(&screen, &"orientation".into()) {
+            if !orientation.is_undefined() {
+                if let Ok(angle) = js_sys::Reflect::get(&orientation, &"angle".into()) {
+                    if let Some(a) = angle.as_f64() {
+                        return a;
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: window.orientation (deprecated but widely supported)
+    if let Ok(val) = js_sys::Reflect::get(&window, &"orientation".into()) {
+        if let Some(a) = val.as_f64() {
+            return a;
+        }
+    }
+    0.0
+}
+
 fn build_orientation_callback(
     state: Rc<RefCell<State>>,
 ) -> Closure<dyn FnMut(web_sys::DeviceOrientationEvent)> {
@@ -146,16 +217,29 @@ fn build_orientation_callback(
         let gamma = e.gamma().unwrap_or(0.0);
 
         if !st.calibrated {
+            // Skip calibration on the first few events — alpha often starts at 0
+            // before the compass settles.
+            st.event_count += 1;
+            if st.event_count < 5 {
+                return;
+            }
             st.base_alpha = alpha;
             st.base_beta = beta;
             st.base_gamma = gamma;
             st.calibrated = true;
-            web_sys::console::log_1(&"orientation calibrated".into());
+            web_sys::console::log_1(
+                &format!(
+                    "orientation calibrated (screen_angle={}°, after {} events): a={:.1} b={:.1} g={:.1}",
+                    st.screen_angle, st.event_count, alpha, beta, gamma
+                )
+                .into(),
+            );
         }
 
         st.alpha = alpha;
         st.beta = beta;
         st.gamma = gamma;
+        st.event_count += 1;
     })
 }
 
@@ -188,20 +272,77 @@ fn create_permission_prompt(document: &web_sys::Document) -> web_sys::HtmlElemen
     el
 }
 
+/// Wrap an angle delta to [-180, 180] to handle 0/360 wraparound.
+fn wrap_angle(mut d: f64) -> f64 {
+    d %= 360.0;
+    if d > 180.0 {
+        d -= 360.0;
+    } else if d < -180.0 {
+        d += 360.0;
+    }
+    d
+}
+
 impl InputBackend for TouchInput {
     fn poll(&mut self) -> InputState {
-        let st = self.state.borrow();
-        let sensitivity = 0.03;
+        let mut st = self.state.borrow_mut();
+        st.poll_count += 1;
 
-        // Relative to calibration pose
-        let yaw = ((st.alpha - st.base_alpha) as f32).to_radians() * sensitivity;
-        let pitch = ((st.beta - st.base_beta) as f32).to_radians() * sensitivity;
-        let roll = ((st.gamma - st.base_gamma) as f32).to_radians() * sensitivity;
+        if !st.calibrated {
+            return InputState::default();
+        }
+
+        // Only use beta (front-back tilt) and gamma (left-right tilt).
+        // No compass (alpha) — pure accelerometer.
+        let d_beta = wrap_angle(st.beta - st.base_beta) as f32;
+        let d_gamma = wrap_angle(st.gamma - st.base_gamma) as f32;
+
+        let max_tilt = 15.0_f32;
+        let max_turn = starlet_shared::constants::MAX_TURN_RATE;
+
+        // Soft center: shift base if tilted beyond range
+        if d_beta.abs() > max_tilt {
+            st.base_beta += (d_beta - d_beta.signum() * max_tilt) as f64;
+        }
+        if d_gamma.abs() > max_tilt {
+            st.base_gamma += (d_gamma - d_gamma.signum() * max_tilt) as f64;
+        }
+
+        // Recompute after center shift
+        let d_beta = wrap_angle(st.beta - st.base_beta) as f32;
+        let d_gamma = wrap_angle(st.gamma - st.base_gamma) as f32;
+
+        // Remap axes based on screen orientation.
+        // beta = tilt front/back, gamma = tilt left/right (in device portrait).
+        // In landscape, these swap roles.
+        // Joystick feel: push phone forward = nose down, tilt right = turn right.
+        let (raw_yaw, raw_pitch) = match st.screen_angle as i32 {
+            90 => (-d_beta, -d_gamma),
+            -90 | 270 => (d_beta, d_gamma),
+            180 => (d_gamma, d_beta),
+            _ => (-d_gamma, -d_beta),
+        };
+
+        // Map tilt angle to turn rate: [-max_tilt, max_tilt] → [-max_turn, max_turn]
+        let yaw = (raw_yaw / max_tilt).clamp(-1.0, 1.0) * max_turn;
+        let pitch = (raw_pitch / max_tilt).clamp(-1.0, 1.0) * max_turn;
+
+        if st.poll_count % 300 == 1 {
+            web_sys::console::log_1(
+                &format!(
+                    "touch poll #{}: events={} db={:.1} dg={:.1} → yaw={:.2} pitch={:.2} screen={}°",
+                    st.poll_count, st.event_count,
+                    d_beta, d_gamma,
+                    yaw, pitch, st.screen_angle,
+                )
+                .into(),
+            );
+        }
 
         InputState {
-            yaw: -yaw,
-            pitch: -pitch,
-            roll: -roll,
+            yaw,
+            pitch,
+            roll: 0.0,
             speed: st.speed,
         }
     }

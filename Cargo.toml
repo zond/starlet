@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/starlet-shared", "crates/starlet-client", "crates/starlet-server"]
+members = ["crates/starlet-shared", "crates/starlet-client", "crates/starlet-server", "crates/obj2rust"]
 resolver = "2"
 
 [workspace.dependencies]

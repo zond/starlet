@@ -1,4 +1,4 @@
-use glam::{Mat4, Quat, Vec3};
+use glam::Mat4;
 
 pub struct Camera {
     pub fov_y: f32,
@@ -13,19 +13,6 @@ impl Camera {
             near: 0.1,
             far: 50_000.0,
         }
-    }
-
-    pub fn view_matrix(&self, position: Vec3, orientation: Quat) -> Mat4 {
-        let forward = orientation * Vec3::NEG_Z;
-        let up = orientation * Vec3::Y;
-        Mat4::look_to_rh(position, forward, up)
-    }
-
-    /// View matrix with translation zeroed — for objects at infinity (stars).
-    pub fn sky_view_matrix(&self, orientation: Quat) -> Mat4 {
-        let forward = orientation * Vec3::NEG_Z;
-        let up = orientation * Vec3::Y;
-        Mat4::look_to_rh(Vec3::ZERO, forward, up)
     }
 
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
